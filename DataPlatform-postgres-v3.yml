@@ -1,23 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Complete Data Platform with S3, Glue, Redshift, Airflow on ECS, and Athena'
+Description: 'Data Platform with S3, Glue, Postgres (RDS) for Gold, Airflow on ECS, and Athena'
 
 Parameters:
   ProjectName:
     Type: String
     Default: 'data-platform'
     Description: 'Name prefix for all resources'
-  
-  RedshiftMasterUsername:
-    Type: String
-    Default: 'admin'
-    Description: 'Redshift master username'
-  
-  RedshiftMasterPassword:
-    Type: String
-    NoEcho: true
-    MinLength: 8
-    Description: 'Redshift master password (min 8 chars)'
-  
+      
   AirflowAdminUsername:
     Type: String
     Default: 'admin'
@@ -29,7 +18,7 @@ Parameters:
     MinLength: 8
     Description: 'Airflow admin password (min 8 chars)'
   
-  AirflowDagBucketName:
+  AirflowS3BucketName:
     Type: String
     NoEcho: true
     MinLength: 8
@@ -188,6 +177,7 @@ Resources:
   # ===== S3 BUCKETS =====
   DataLakeBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
     Properties:
       BucketName: !Sub '${ProjectName}-data-lake-${AWS::AccountId}'
       VersioningConfiguration:
@@ -200,8 +190,9 @@ Resources:
 
   AirflowBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
     Properties:
-      BucketName: !Sub '${ProjectName}-airflow-${AWS::AccountId}'
+      BucketName: !Ref AirflowS3BucketName
       VersioningConfiguration:
         Status: Enabled
       PublicAccessBlockConfiguration:
@@ -212,6 +203,7 @@ Resources:
 
   AthenaBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
     Properties:
       BucketName: !Sub '${ProjectName}-athena-results-${AWS::AccountId}'
       PublicAccessBlockConfiguration:
@@ -249,14 +241,12 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:s3:::${DataLakeBucket}/*'
                   - !Sub 'arn:aws:s3:::${DataLakeBucket}'
-        - PolicyName: GlueRedshiftAccess
+                  - !Sub 'arn:aws:s3:::${AirflowBucket}/*'
+                  - !Sub 'arn:aws:s3:::${AirflowBucket}'
+        - PolicyName: GlueNetworkingAccess
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
-                Action:
-                  - redshift-serverless:*
-                Resource: '*'
               - Effect: Allow
                 Action:
                   - ec2:CreateNetworkInterface
@@ -277,87 +267,6 @@ Resources:
                   - secretsmanager:* 
                 Resource: '*'
 
-  RedshiftGlueAccessRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - redshift.amazonaws.com
-                - redshift-serverless.amazonaws.com
-            Action:
-              - sts:AssumeRole
-      Policies:
-        - PolicyName: GlueCatalogAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - glue:GetDatabase
-                  - glue:GetTable
-                  - glue:GetPartitions
-                  - glue:GetTables
-                  - glue:GetDatabases
-                Resource: '*'
-        - PolicyName: RedshiftSecretsManagerFullAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - secretsmanager:* 
-                Resource: '*'
-
-  RedshiftServiceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub '${ProjectName}-redshift-service-role'
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: 
-                - redshift.amazonaws.com
-                - redshift-serverless.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: RedshiftS3Access
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:GetObjectVersion
-                  - s3:ListBucket
-                  - s3:GetBucketLocation
-                Resource:
-                  - !Sub 'arn:aws:s3:::${DataLakeBucket}/*'
-                  - !Sub 'arn:aws:s3:::${DataLakeBucket}'
-              - Effect: Allow
-                Action:
-                  - glue:GetDatabase
-                  - glue:GetTable
-                  - glue:GetPartitions
-                Resource: '*'
-        - PolicyName: RedshiftGlueDataCatalogAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - glue:*
-                Resource: 
-                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
-                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/awsdatacatalog'
-                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/*'
-                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/*/*'
-
   DataCatalogUserRole:
     Type: AWS::IAM::Role
     Properties:
@@ -370,16 +279,12 @@ Resources:
               AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: RedshiftDataCatalogAccess
+        - PolicyName: DataCatalogReadOnly
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
-                  - redshift-serverless:GetCredentials
-                  - redshift-serverless:GetWorkgroup
-                  - redshift-serverless:GetNamespace
-                  - redshift-data:*
                   - glue:GetDatabase
                   - glue:GetDatabases
                   - glue:GetTable
@@ -388,10 +293,10 @@ Resources:
                   - glue:GetPartitions
                   - glue:BatchGetPartition
                   - glue:SearchTables
-                  - glue:GetCatalogImportStatus
-                  - glue:GetDataCatalogEncryptionSettings
+                  - athena:GetWorkGroup
+                  - athena:GetWorkGroups
+                  - athena:ListWorkGroups
                 Resource: '*'
-
   AirflowExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -410,15 +315,64 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              # Glue: restrict to common job and catalog operations
               - Effect: Allow
                 Action:
-                  - glue:*
-                  - s3:*
-                  - athena:*
-                  - redshift:*
-                  - logs:*
+                  - glue:GetJob
+                  - glue:GetJobs
+                  - glue:StartJobRun
+                  - glue:GetJobRun
+                  - glue:GetJobRuns
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetPartition
+                  - glue:GetPartitions
+                  - glue:BatchGetPartition
+                  - glue:CreateJob
+                  - glue:UpdateJob
                 Resource: '*'
 
+              # S3: restrict to the Airflow DAGs/config bucket
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${AirflowS3BucketName}'
+                  - !Sub 'arn:aws:s3:::${AirflowS3BucketName}/*'
+
+              # Athena: restrict to query lifecycle operations
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                  - athena:ListWorkGroups
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - redshift-data:ExecuteStatement
+                  - redshift-data:DescribeStatement
+                  - redshift-data:GetStatementResult
+                  - redshift-data:ListStatements
+                  - redshift-data:CancelStatement
+                Resource: '*'
+
+              # CloudWatch Logs: restrict to log groups for this project
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${ProjectName}-*:*'
   AirflowTaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -443,6 +397,7 @@ Resources:
                   - redshift:*
                   - logs:*
                   - ecs:*
+                  - iam:GetRole
                 Resource: '*'
 
   # Role for DAG sync task
@@ -477,39 +432,59 @@ Resources:
                 Resource: '*'
 
   # ===== GLUE RESOURCES =====
-  GlueDatabase:
+  BronzeDatabase:
     Type: AWS::Glue::Database
+    DeletionPolicy: Retain
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseInput:
-        Name: !Sub '${ProjectName}_database'
-        Description: 'Main database for data platform'
+        Name: 'bronze'
+        Description: 'Bronze layer - raw data as tables'
+
+  SilverDatabase:
+    Type: AWS::Glue::Database
+    DeletionPolicy: Retain
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: 'silver'
+        Description: 'Silver layer - cleaned and partitioned parquet data'
+
+  GoldDatabase:
+    Type: AWS::Glue::Database
+    DeletionPolicy: Retain
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: 'gold'
+        Description: 'Gold layer - enriched data for analytics'
 
   GlueCrawler:
     Type: AWS::Glue::Crawler
     Properties:
       Name: !Sub '${ProjectName}-s3-crawler'
       Role: !GetAtt GlueServiceRole.Arn
-      DatabaseName: !Ref GlueDatabase
+      DatabaseName: !Ref BronzeDatabase
       Targets:
         S3Targets:
-          - Path: !Sub '${DataLakeBucket}/raw/'
+          - Path: !Sub 's3://${DataLakeBucket}/raw/sales/'
             Exclusions:
               - '**/_temporary/**'
               - '**/.spark-staging/**'
+              - '**/.DS_Store'
               - '**/.DS_Store/**'
-          - Path: !Sub '${DataLakeBucket}/bronze/'
+          - Path: !Sub 's3://${DataLakeBucket}/raw/customers/'
             Exclusions:
               - '**/_temporary/**'
               - '**/.spark-staging/**'
-          - Path: !Sub '${DataLakeBucket}/silver/'
+              - '**/.DS_Store'
+              - '**/.DS_Store/**'
+          - Path: !Sub 's3://${DataLakeBucket}/raw/user_profiles/'
             Exclusions:
               - '**/_temporary/**'
               - '**/.spark-staging/**'
-          - Path: !Sub '${DataLakeBucket}/gold/'
-            Exclusions:
-              - '**/_temporary/**'
-              - '**/.spark-staging/**'
+              - '**/.DS_Store'
+              - '**/.DS_Store/**'
       SchemaChangePolicy:
         UpdateBehavior: UPDATE_IN_DATABASE
         DeleteBehavior: LOG
@@ -522,22 +497,21 @@ Resources:
           }
         }
 
-  # Additional Crawler for Redshift tables
-  RedshiftCrawler:
+
+  SilverCrawler:
     Type: AWS::Glue::Crawler
-    DependsOn: RedshiftServerlessWorkgroup
     Properties:
-      Name: !Sub '${ProjectName}-redshift-crawler'
+      Name: !Sub '${ProjectName}-silver-crawler'
       Role: !GetAtt GlueServiceRole.Arn
-      DatabaseName: !Ref GlueDatabase
+      DatabaseName: !Ref SilverDatabase
       Targets:
-        JdbcTargets:
-          - ConnectionName: !Ref RedshiftConnectionAZ1
-            Path: 'datawarehouse/%'
+        S3Targets:
+          - Path: !Sub 's3://${DataLakeBucket}/silver/sales/'
+          - Path: !Sub 's3://${DataLakeBucket}/silver/customers/'
+          - Path: !Sub 's3://${DataLakeBucket}/silver/user_profiles/'
             Exclusions:
-              - 'information_schema/%'
-              - 'pg_catalog/%'
-              - 'pg_toast/%'
+              - '**/_temporary/**'
+              - '**/.spark-staging/**'
       SchemaChangePolicy:
         UpdateBehavior: UPDATE_IN_DATABASE
         DeleteBehavior: LOG
@@ -551,118 +525,129 @@ Resources:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
 
-  RedshiftSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Redshift SG
-      VpcId: !Ref VPC
-
-  # Glue Connection for Redshift
-  RedshiftConnectionAZ1:
+  # Glue Connection for Gold RDS (Postgres)
+  GoldRDSConnection:
     Type: AWS::Glue::Connection
+    DependsOn: GoldRDSInstance
     Properties:
       CatalogId: !Ref AWS::AccountId
       ConnectionInput:
-        Name: !Sub '${ProjectName}-redshift-connection-az1'
-        Description: 'Connection to Redshift Serverless'
+        Name: !Sub '${ProjectName}-gold-rds-connection'
+        Description: 'JDBC connection to dedicated RDS for Gold layer'
         ConnectionType: JDBC
         ConnectionProperties:
-          JDBC_CONNECTION_URL: !Sub 
-            - 'jdbc:redshift://${RedshiftEndpoint}:5439/dev'
-            - RedshiftEndpoint: !GetAtt RedshiftServerlessWorkgroup.Workgroup.Endpoint.Address
-          USERNAME: !Ref RedshiftMasterUsername
-          PASSWORD: !Ref RedshiftMasterPassword
+          JDBC_CONNECTION_URL: !Sub 'jdbc:postgresql://${GoldRDSInstance.Endpoint.Address}:5432/gold_db'
+          USERNAME: 'dbadmin'
+          PASSWORD: !Ref AirflowAdminPassword
         PhysicalConnectionRequirements:
           SecurityGroupIdList:
             - !Ref GlueCrawlerSecurityGroup
           SubnetId: !Ref PrivateSubnet1
-  
-  RedshiftConnectionAZ2:
-    Type: AWS::Glue::Connection
-    Properties:
-      CatalogId: !Ref AWS::AccountId
-      ConnectionInput:
-        Name: !Sub '${ProjectName}-redshift-connection-az2'
-        Description: 'Connection to Redshift Serverless'
-        ConnectionType: JDBC
-        ConnectionProperties:
-          JDBC_CONNECTION_URL: !Sub 
-            - 'jdbc:redshift://${RedshiftEndpoint}:5439/dev'
-            - RedshiftEndpoint: !GetAtt RedshiftServerlessWorkgroup.Workgroup.Endpoint.Address
-          USERNAME: !Ref RedshiftMasterUsername
-          PASSWORD: !Ref RedshiftMasterPassword
-        PhysicalConnectionRequirements:
-          SecurityGroupIdList:
-            - !Ref GlueCrawlerSecurityGroup
-          SubnetId: !Ref PrivateSubnet2
-  
-  RedshiftConnectionAZ3:
-    Type: AWS::Glue::Connection
-    Properties:
-      CatalogId: !Ref AWS::AccountId
-      ConnectionInput:
-        Name: !Sub '${ProjectName}-redshift-connection-az3'
-        Description: 'Connection to Redshift Serverless'
-        ConnectionType: JDBC
-        ConnectionProperties:
-          JDBC_CONNECTION_URL: !Sub 
-            - 'jdbc:redshift://${RedshiftEndpoint}:5439/dev'
-            - RedshiftEndpoint: !GetAtt RedshiftServerlessWorkgroup.Workgroup.Endpoint.Address
-          USERNAME: !Ref RedshiftMasterUsername
-          PASSWORD: !Ref RedshiftMasterPassword
-        PhysicalConnectionRequirements:
-          SecurityGroupIdList:
-            - !Ref GlueCrawlerSecurityGroup
-          SubnetId: !Ref PrivateSubnet3
 
-  GlueToRedshiftEgressRule:
+  GlueToGoldRDSEgressRule:
     Type: AWS::EC2::SecurityGroupEgress
-    DependsOn: [GlueCrawlerSecurityGroup, RedshiftSecurityGroup]
+    DependsOn: [GlueCrawlerSecurityGroup, GoldDatabaseSecurityGroup]
     Properties:
       GroupId: !Ref GlueCrawlerSecurityGroup
       IpProtocol: tcp
-      FromPort: 5439
-      ToPort: 5439
-      DestinationSecurityGroupId: !Ref RedshiftSecurityGroup
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref GoldDatabaseSecurityGroup
 
-  RedshiftIngressFromGlueRule:
+  GoldRDSIngressFromGlueRule:
     Type: AWS::EC2::SecurityGroupIngress
-    DependsOn: [GlueCrawlerSecurityGroup, RedshiftSecurityGroup]
+    DependsOn: [GlueCrawlerSecurityGroup, GoldDatabaseSecurityGroup]
     Properties:
-      GroupId: !Ref RedshiftSecurityGroup
+      GroupId: !Ref GoldDatabaseSecurityGroup
       IpProtocol: tcp
-      FromPort: 5439
-      ToPort: 5439
+      FromPort: 5432
+      ToPort: 5432
       SourceSecurityGroupId: !Ref GlueCrawlerSecurityGroup
 
-  # ===== REDSHIFT SERVERLESS RESOURCES =====
-
-  RedshiftServerlessNamespace:
-    Type: AWS::RedshiftServerless::Namespace
+  # ===== GLUE JOBS =====
+  ProcessSalesJob:
+    Type: AWS::Glue::Job
     Properties:
-      NamespaceName: !Sub '${ProjectName}-namespace'
-      AdminUsername: !Ref RedshiftMasterUsername
-      AdminUserPassword: !Ref RedshiftMasterPassword
-      IamRoles:
-        - !GetAtt RedshiftGlueAccessRole.Arn
-        - !GetAtt RedshiftServiceRole.Arn
+      Name: !Sub '${ProjectName}-process-sales'
+      Role: !GetAtt GlueServiceRole.Arn
+      Connections:
+        Connections:
+          - !Ref GoldRDSConnection
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${AirflowBucket}/scripts/process_sales.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': 'python'
+        '--TempDir': !Sub 's3://${AirflowBucket}/temporary/'
+        '--enable-metrics': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--BRONZE_DATABASE': !Ref BronzeDatabase
+        '--SILVER_DATABASE': !Ref SilverDatabase
+        '--DATA_LAKE_BUCKET': !Ref DataLakeBucket
+        '--POSTGRES_CONNECTION_NAME': !Ref GoldRDSConnection
+        '--GOLD_SCHEMA': 'gold'
+      GlueVersion: '4.0'
+      WorkerType: G.1X
+      NumberOfWorkers: 2
 
-  RedshiftServerlessWorkgroup:
-    Type: AWS::RedshiftServerless::Workgroup
+  ProcessCustomersJob:
+    Type: AWS::Glue::Job
     Properties:
-      WorkgroupName: !Sub '${ProjectName}-workgroup'
-      NamespaceName: !Ref RedshiftServerlessNamespace
-      BaseCapacity: 8  # Redshift Processing Units (RPUs) - minimum is 8
-      PubliclyAccessible: false
-      EnhancedVpcRouting: true
-      SecurityGroupIds:
-        - !Ref RedshiftSecurityGroup
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
-        - !Ref PrivateSubnet3
+      Name: !Sub '${ProjectName}-process-customers'
+      Role: !GetAtt GlueServiceRole.Arn
+      Connections:
+        Connections:
+          - !Ref GoldRDSConnection
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${AirflowBucket}/scripts/process_customers.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': 'python'
+        '--TempDir': !Sub 's3://${AirflowBucket}/temporary/'
+        '--enable-metrics': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--BRONZE_DATABASE': !Ref BronzeDatabase
+        '--SILVER_DATABASE': !Ref SilverDatabase
+        '--DATA_LAKE_BUCKET': !Ref DataLakeBucket
+        '--POSTGRES_CONNECTION_NAME': !Ref GoldRDSConnection
+        '--GOLD_SCHEMA': 'gold'
+      GlueVersion: '4.0'
+      WorkerType: G.1X
+      NumberOfWorkers: 2
 
-  # ===== ATHENA RESOURCES =====aws configure
+  ProcessUserProfilesJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub '${ProjectName}-process-user-profiles'
+      Role: !GetAtt GlueServiceRole.Arn
+      Connections:
+        Connections:
+          - !Ref GoldRDSConnection
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${AirflowBucket}/scripts/process_user_profiles.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--job-language': 'python'
+        '--TempDir': !Sub 's3://${AirflowBucket}/temporary/'
+        '--enable-metrics': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+        '--BRONZE_DATABASE': !Ref BronzeDatabase
+        '--SILVER_DATABASE': !Ref SilverDatabase
+        '--DATA_LAKE_BUCKET': !Ref DataLakeBucket
+        '--POSTGRES_CONNECTION_NAME': !Ref GoldRDSConnection
+        '--GOLD_SCHEMA': 'gold'
+      GlueVersion: '4.0'
+      WorkerType: G.1X
+      NumberOfWorkers: 2
+
+  
+  
+
+
+  # ===== ATHENA RESOURCES =====
   AthenaWorkGroup:
     Type: AWS::Athena::WorkGroup
     Properties:
@@ -710,6 +695,44 @@ Resources:
           ToPort: 5432
           SourceSecurityGroupId: !Ref AirflowSecurityGroup
 
+  # ===== DEDICATED RDS POSTGRES FOR GOLD LAYER =====
+  GoldDatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Security group for dedicated Gold RDS database'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AirflowSecurityGroup
+
+  GoldDatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: 'Subnet group for Gold database'
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+
+  GoldRDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-gold-db'
+      DBInstanceClass: 'db.t3.micro'
+      Engine: 'postgres'
+      EngineVersion: '17.4'
+      MasterUsername: 'dbadmin'
+      MasterUserPassword: !Ref AirflowAdminPassword
+      AllocatedStorage: 20
+      DBName: 'gold_db'
+      VPCSecurityGroups:
+        - !Ref GoldDatabaseSecurityGroup
+      DBSubnetGroupName: !Ref GoldDatabaseSubnetGroup
+      PubliclyAccessible: false
+
   # ===== RDS POSTGRES FOR AIRFLOW METADATA =====
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
@@ -722,6 +745,7 @@ Resources:
 
   AirflowDatabase:
     Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
     Properties:
       DBInstanceIdentifier: !Sub '${ProjectName}-airflow-db'
       DBInstanceClass: 'db.t3.micro'
@@ -829,10 +853,10 @@ Resources:
       Volumes:
         - Name: airflow-dags
           EFSVolumeConfiguration:
-            FileSystemId: !Ref AirflowEFS
+            FilesystemId: !Ref AirflowEFS
         - Name: airflow-config
           EFSVolumeConfiguration:
-            FileSystemId: !Ref AirflowConfigEFS
+            FilesystemId: !Ref AirflowConfigEFS
 
   AirflowSchedulerTaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -894,14 +918,15 @@ Resources:
       Volumes:
         - Name: airflow-dags
           EFSVolumeConfiguration:
-            FileSystemId: !Ref AirflowEFS
+            FilesystemId: !Ref AirflowEFS
         - Name: airflow-config
           EFSVolumeConfiguration:
-            FileSystemId: !Ref AirflowConfigEFS
+            FilesystemId: !Ref AirflowConfigEFS
 
   # ===== EFS FOR AIRFLOW DAGS =====
   AirflowEFS:
     Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
     Properties:
       FileSystemTags:
         - Key: Name
@@ -933,6 +958,7 @@ Resources:
   
   AirflowConfigEFS:
     Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
     Properties:
       FileSystemTags:
         - Key: Name
@@ -987,7 +1013,7 @@ Resources:
       TaskRoleArn: !GetAtt DAGSyncTaskRole.Arn
       ContainerDefinitions:
         - Name: dag-sync
-          Image: 'amazon/aws-cli:latest'
+          Image: 'amazon/aws-cli:2.15.30'
           Essential: true
           Environment:
             - Name: S3_BUCKET
@@ -999,9 +1025,10 @@ Resources:
           MountPoints:
             - SourceVolume: airflow-dags
               ContainerPath: /opt/airflow/dags
-          Command:
-            - sh
+          EntryPoint:
+            - /bin/sh
             - -c
+          Command:
             - |
               echo "Starting DAG sync from S3 to EFS..."
               echo "S3 Bucket: $S3_BUCKET"
@@ -1028,10 +1055,10 @@ Resources:
       Volumes:
         - Name: airflow-dags
           EFSVolumeConfiguration:
-            FileSystemId: !Ref AirflowEFS
+            FilesystemId: !Ref AirflowEFS
         - Name: airflow-config
           EFSVolumeConfiguration:
-            FileSystemId: !Ref AirflowConfigEFS
+            FilesystemId: !Ref AirflowConfigEFS
 
   # ===== EVENTBRIDGE RULE FOR SCHEDULED DAG SYNC =====
   DAGSyncScheduleRule:
@@ -1205,15 +1232,17 @@ Outputs:
 
   GlueDatabaseName:
     Description: 'Glue Database Name'
-    Value: !Ref GlueDatabase
+    Value: !Ref BronzeDatabase
     Export:
       Name: !Sub '${ProjectName}-database'
 
-  RedshiftServerlessEndpoint:
-    Description: 'Redshift Serverless Workgroup Endpoint'
-    Value: !GetAtt RedshiftServerlessWorkgroup.Workgroup.Endpoint.Address
-    Export:
-      Name: !Sub '${ProjectName}-redshift-endpoint'
+  PostgresEndpoint:
+    Description: 'RDS Postgres endpoint (Airflow Technical)'
+    Value: !GetAtt AirflowDatabase.Endpoint.Address
+
+  AuroraGoldEndpoint:
+    Description: 'Dedicated RDS endpoint (Gold Layer)'
+    Value: !GetAtt GoldRDSInstance.Endpoint.Address
 
   AirflowWebUI:
     Description: 'Airflow Web UI URL'
