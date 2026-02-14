@@ -213,3 +213,8 @@ __marimo__/
 # Windows
 Thumbs.db
 desktop.ini
+
+
+*.pem
+*.key
+docs/
