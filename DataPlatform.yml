@@ -29,7 +29,7 @@ Parameters:
     MinLength: 8
     Description: 'Airflow admin password (min 8 chars)'
   
-  AirflowDagBucketName:
+  AirflowS3BucketName:
     Type: String
     NoEcho: true
     MinLength: 8
@@ -188,6 +188,7 @@ Resources:
   # ===== S3 BUCKETS =====
   DataLakeBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
     Properties:
       BucketName: !Sub '${ProjectName}-data-lake-${AWS::AccountId}'
       VersioningConfiguration:
@@ -200,8 +201,9 @@ Resources:
 
   AirflowBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
     Properties:
-      BucketName: !Sub '${ProjectName}-airflow-${AWS::AccountId}'
+      BucketName: !Ref AirflowS3BucketName
       VersioningConfiguration:
         Status: Enabled
       PublicAccessBlockConfiguration:
@@ -212,6 +214,7 @@ Resources:
 
   AthenaBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
     Properties:
       BucketName: !Sub '${ProjectName}-athena-results-${AWS::AccountId}'
       PublicAccessBlockConfiguration:
@@ -249,6 +252,8 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:s3:::${DataLakeBucket}/*'
                   - !Sub 'arn:aws:s3:::${DataLakeBucket}'
+                  - !Sub 'arn:aws:s3:::${AirflowBucket}/*'
+                  - !Sub 'arn:aws:s3:::${AirflowBucket}'
         - PolicyName: GlueRedshiftAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -303,6 +308,19 @@ Resources:
                   - glue:GetTables
                   - glue:GetDatabases
                 Resource: '*'
+        - PolicyName: RedshiftS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:aws:s3:::${DataLakeBucket}/*'
+                  - !Sub 'arn:aws:s3:::${DataLakeBucket}'
         - PolicyName: RedshiftSecretsManagerFullAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -467,8 +485,8 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource:
-                  - !Sub 'arn:aws:s3:::${AirflowBucket}/*'
-                  - !Sub 'arn:aws:s3:::${AirflowBucket}'
+                  - !Sub 'arn:aws:s3:::${AirflowS3BucketName}/*'
+                  - !Sub 'arn:aws:s3:::${AirflowS3BucketName}'
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -987,7 +1005,7 @@ Resources:
       TaskRoleArn: !GetAtt DAGSyncTaskRole.Arn
       ContainerDefinitions:
         - Name: dag-sync
-          Image: 'amazon/aws-cli:latest'
+          Image: 'amazon/aws-cli:2.15.30'
           Essential: true
           Environment:
             - Name: S3_BUCKET
@@ -999,9 +1017,10 @@ Resources:
           MountPoints:
             - SourceVolume: airflow-dags
               ContainerPath: /opt/airflow/dags
-          Command:
-            - sh
+          EntryPoint:
+            - /bin/sh
             - -c
+          Command:
             - |
               echo "Starting DAG sync from S3 to EFS..."
               echo "S3 Bucket: $S3_BUCKET"

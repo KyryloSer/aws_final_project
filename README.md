@@ -46,7 +46,7 @@ aws cloudformation create-stack \
 Моніторити деплой можете в [консолі AWS Cloudformation](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1)
 3. Після деплою перейдіть у вкладку `Resources` та знайдіть `DataLakeBucket`. Скопіюйте його назву та перемістіть дані в директорію `raw` цього бакету:
 ```bash
-aws s3 cp --recursive data s3://<DataLakeBucketName>/raw
+aws s3 cp --recursive data s3://<DataLakeBucketName>/raw 
 ```
 4. В GlueETL потрібно виконати обробку `raw` даних в `bronze` та  `silver`
 5. В Redshift необхідно виконати роботу над заповненням `gold` датасету

@@ -6,10 +6,6 @@ from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from pyspark.context import SparkContext
 
-from utils.logger import get_logger
-
-logger = get_logger(__name__)
-
 
 def main() -> None:
     args = getResolvedOptions(sys.argv, ["DATALAKE_BUCKET", "BRONZE_PREFIX", "SILVER_PREFIX"])
@@ -21,17 +17,12 @@ def main() -> None:
     bronze_path = f"s3://{bucket}/{bronze_prefix}/sales/"
     silver_path = f"s3://{bucket}/{silver_prefix}/sales/"
 
-    logger.info("Starting job")
-    logger.info(f"Bronze path: {bronze_path}")
-    logger.info(f"Silver output path: {silver_path}")
-
     sc = SparkContext.getOrCreate()
     glue_context = GlueContext(sc)
     spark = glue_context.spark_session
 
     bronze_sales_df = spark.read.parquet(bronze_path)
     bronze_count = bronze_sales_df.count()
-    logger.info(f"Bronze row count: {bronze_count}")
 
     # 1) Rename + trim
     renamed_sales_df = bronze_sales_df.select(
@@ -71,7 +62,6 @@ def main() -> None:
     )
 
     silver_count = filtered_sales_df.count()
-    logger.info(f"Silver row count: {silver_count}")
 
     # Write silver parquet partitioned by purchase_date
     (
@@ -82,7 +72,6 @@ def main() -> None:
         .parquet(silver_path)
     )
 
-    logger.info("Silver write finished")
 
 
 if __name__ == "__main__":

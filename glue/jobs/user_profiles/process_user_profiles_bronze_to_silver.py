@@ -1,18 +1,9 @@
 # glue/jobs/user_profiles/process_user_profiles_bronze_to_silver.py
 import sys
-from pyspark.sql.functions import col, floor, months_between, current_date, to_date
+from pyspark.sql.functions import col, trim, lower, to_date, floor, months_between, current_date
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from pyspark.context import SparkContext
-
-try:
-    from utils.logger import get_logger
-    logger = get_logger("process_user_profiles_bronze_to_silver")
-except ImportError:
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger("process_user_profiles_bronze_to_silver")
-    logger.warning("utils.logger not found, using default logging")
 
 
 def main() -> None:
@@ -25,34 +16,28 @@ def main() -> None:
     bronze_path = f"s3://{bucket}/{bronze_prefix}/user_profiles/"
     silver_path = f"s3://{bucket}/{silver_prefix}/user_profiles/"
 
-    logger.info("Starting User Profiles Bronze to Silver job")
-    logger.info(f"Bronze path: {bronze_path}")
-    logger.info(f"Silver output path: {silver_path}")
-
     sc = SparkContext.getOrCreate()
     glue_context = GlueContext(sc)
     spark = glue_context.spark_session
 
     bronze_df = spark.read.parquet(bronze_path)
 
-    # Calculate age from birth_date
+    # Data Cleansing
     silver_df = (
         bronze_df
-        .withColumn("reg_date", to_date(col("birth_date"), "yyyy-MM-dd"))
-        .withColumn("age", floor(months_between(current_date(), col("reg_date")) / 12).cast("int"))
-        .select(
-            col("email"),
-            col("full_name"),
-            col("age"),
-            col("state"),
-            col("phone_number")
-        )
+        .filter(col("email").isNotNull())
+        .withColumn("birth_date", to_date(col("birth_date"), "yyyy-MM-dd"))
+        .withColumn("age", floor(months_between(current_date(), col("birth_date")) / 12).cast("int"))
+        .withColumn("email", lower(trim(col("email"))))
+        .withColumn("full_name", trim(col("full_name")))
+        .withColumn("state", trim(col("state")))
+        .withColumn("phone_number", trim(col("phone_number")))
+        .select("email", "full_name", "birth_date", "age", "state", "phone_number")
+        .dropDuplicates(["email"])
     )
 
-    logger.info(f"Final Silver count: {silver_df.count()}")
 
-    (silver_df.write.mode("overwrite").parquet(silver_path))
-    logger.info("User Profiles Silver write finished")
+    silver_df.write.mode("overwrite").parquet(silver_path)
 
 
 if __name__ == "__main__":

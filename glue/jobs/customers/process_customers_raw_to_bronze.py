@@ -5,14 +5,6 @@ from pyspark.sql.types import StructType, StructField, StringType
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from pyspark.context import SparkContext
-try:
-    from utils.logger import get_logger
-    logger = get_logger("process_customers_raw_to_bronze")
-except ImportError:
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger("process_customers_raw_to_bronze")
-    logger.warning("utils.logger not found, using default logging")
 
 
 def main() -> None:
@@ -22,20 +14,17 @@ def main() -> None:
     raw_prefix = args["RAW_PREFIX"].strip("/")
     bronze_prefix = args["BRONZE_PREFIX"].strip("/")
 
+    # Customers приходят как дампы: последний файл содержит все данные
     raw_path = f"s3://{bucket}/{raw_prefix}/customers/*/*.csv"
     out_path = f"s3://{bucket}/{bronze_prefix}/customers/"
-
-    logger.info("Starting Customers Raw to Bronze job")
-    logger.info(f"Raw path: {raw_path}")
-    logger.info(f"Bronze output path: {out_path}")
 
     sc = SparkContext.getOrCreate()
     glue_context = GlueContext(sc)
     spark = glue_context.spark_session
 
-    # Schema based on CSV headers: Id, FirstName, LastName, Email, RegistrationDate, State
+    # Определяем схему (STRING для всех)
     schema = StructType([
-        StructField("Id", StringType(), True),
+        StructField("ClientId", StringType(), True),
         StructField("FirstName", StringType(), True),
         StructField("LastName", StringType(), True),
         StructField("Email", StringType(), True),
@@ -56,10 +45,7 @@ def main() -> None:
               .withColumn("_source_file", input_file_name())
     )
 
-    logger.info(f"Processing {bronze_df.count()} rows")
-
-    (bronze_df.write.mode("overwrite").parquet(out_path))
-    logger.info("Customers Bronze write finished")
+    bronze_df.write.mode("overwrite").parquet(out_path)
 
 
 if __name__ == "__main__":
